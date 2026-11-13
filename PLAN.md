@@ -151,15 +151,31 @@ locally or in CI by itself.
   up to N attempts, then marked `gave_up`).
 
 ### 5.3 `fetch` — polite PDF downloads
-- **First, confirm FDA's current crawl rules [verify].** The original project followed a
-  robots.txt crawl delay of 30 s and a visit window of 23:00–05:00 US Eastern. Parse
-  robots.txt at runtime and honor whatever it says instead of hard-coding these values.
+- **FDA's crawl rules (accessdata.fda.gov robots.txt, checked 2026-11-13):**
+  - The paths we need are **allowed**: `/cdrh_docs/` (PDFs) and
+    `/scripts/cdrh/cfdocs/cfpmn/` (510(k) database pages and search).
+  - **Disallowed paths we must never touch:** `/scripts/cdrh/cfdocs/cftplc/` (TPLC),
+    `/scripts/cdrh/devicesatfda/`, `/scripts/cdrh/*excel*.cfm` (no spreadsheet exports
+    of search results), `/scripts/search/`, and the CLIA, RL and `cfres/textresults.cfm`
+    paths. Recalls and lifecycle data come from openFDA, not from scraping.
+  - `Hit-rate: 30`: wait 30 s between the starts of consecutive requests.
+  - `Visiting-hours: 23:00EDT-05:00EDT`. Taken literally (EDT = UTC−4), this is
+    **03:00–09:00 UTC all year**. We use that fixed UTC window rather than shifting
+    it for EST.
+  - `Concurrent-hits: 2`. We stay at **1 concurrent request**, because with a 30 s hit
+    rate a second stream gains nothing and only adds risk.
+  - These directives are non-standard. Python's `urllib.robotparser` understands
+    `Disallow` but ignores `Hit-rate` and `Visiting-hours`, so `fetch.py` needs a small
+    custom parser for them. Every run fetches robots.txt again and applies whatever it
+    says. If it can't be parsed or the values get stricter, the run stops instead of
+    falling back to defaults. The `Disallow` check runs on every URL before the request.
 - Try the predictable PDF URL first. If it 404s, load the `pmn.cfm?ID=` page and follow
   the "Summary" link. That is one request in the common case instead of two.
 - Send a descriptive User-Agent with a project URL and contact email.
 - **Time budget:** stop starting new downloads when the window closes or the job's
   remaining time drops below a safety margin. Commit progress either way.
-- **Throughput at a 30 s delay:** about 120/hour, or about 700 per 6-hour window.
+- **Throughput at a 30 s delay:** about 120/hour, or about 700 per 6-hour window
+  (in practice about 650 after startup and a safety margin).
   - Steady state: about 60 new PDFs/week, roughly 30 minutes per run.
   - Backfill: about 9,000 PDFs (late 2023 through now), about 13 nightly runs.
 - Handle errors: 404 means record `no_summary_pdf`; 403/429 means stop the whole run
@@ -310,10 +326,13 @@ frame-blocking headers **[verify]** and linking out avoids mirroring issues.
   manual override fails the PR.
 
 ### `update.yml` (weekly cron, plus manual `workflow_dispatch`)
-- Schedule it to start inside FDA's crawl window. 23:00 Eastern is 03:00 UTC (EDT) or
-  04:00 UTC (EST). Starting at 04:00 UTC gives a 5–6 hour window all year.
-  Cron: `0 4 * * 6` (Saturday 04:00 UTC).
-- `timeout-minutes: 330`. The fetcher's own time budget ends earlier still.
+- FDA's crawl window is 03:00–09:00 UTC (see §5.3). The non-fetch stages
+  (ingest, discover) run first and don't touch accessdata.fda.gov, so the job can
+  start a little early. Cron: `45 2 * * 6` (Saturday 02:45 UTC). GitHub's scheduled
+  start times are often delayed, so the fetcher itself waits until 03:00 UTC and
+  stops starting requests at 08:55 UTC, whenever the job actually began.
+- `timeout-minutes: 380`. That covers the window plus extraction, build and deploy
+  after fetching ends.
 - Steps: ingest, discover, fetch, extract-text, extract-predicates, graph,
   build-site-data, then commit `state/` changes as a bot (one commit per run with a
   summary: "+57 devices, +112 edges"), then build the site and deploy with
@@ -326,7 +345,7 @@ frame-blocking headers **[verify]** and linking out avoids mirroring issues.
   **[verify]**. The weekly state commit should keep it active.
 
 ### `backfill.yml` (nightly cron, temporary)
-- The same job in "backfill mode", running nightly until the queue is empty, then
+- The same job in "backfill mode", running nightly (`45 2 * * *`, same window rules) until the queue is empty, then
   disabled. It could be the same workflow with a schedule and an input flag.
 
 ### Deployment
@@ -341,7 +360,8 @@ frame-blocking headers **[verify]** and linking out avoids mirroring issues.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | FDA blocks GitHub-hosted runner IPs (Akamai/WAF) | Fetching impossible from Actions | **Test in milestone 1 before anything else.** Fallback: a self-hosted runner or a cheap VPS that runs only the fetch stage and pushes to `state/`. |
-| FDA crawl rules stricter than assumed | Slower backfill | Read robots.txt at runtime; prioritize newest first; the seed data covers history. |
+| FDA tightens its crawl rules (they were checked 2026-11-13) | Slower backfill | Read robots.txt on every run and stop if it can't be parsed or gets stricter; fetch newest first; the seed data covers history. |
+| Accidentally requesting a disallowed path | Violates FDA's rules and risks a block | Check every URL against `Disallow` before the request; a unit test asserts that the URL builders produce only allowed paths. |
 | PDF URL pattern doesn't hold for some eras | Missed PDFs | Fall back to the `pmn.cfm` page; track the hit rate of each pattern. |
 | Weekly search scrape breaks (HTML changes) | Freshness drops to monthly | Rely on monthly openFDA as the baseline; alert on scrape failure. |
 | Extractor false positives (reference devices counted as predicates) | Misleading graph | Role classification, confidence scores, visible snippets, and the issue-based correction flow. |
@@ -374,7 +394,8 @@ uv project, ruff/ty/pytest configs, CI workflow, README, LICENSE.
 *Done when:* CI passes on an empty package.
 
 ### M1 — Reachability spike (do first; it decides the architecture)
-A throwaway workflow that reads FDA's robots.txt, fetches 3–5 summary PDFs from a GitHub
+A throwaway workflow, run inside the 03:00–09:00 UTC window, that reads FDA's
+robots.txt with the custom parser, fetches 3–5 summary PDFs (30 s apart) from a GitHub
 runner, and logs status codes and headers.
 *Done when:* we know whether Actions can fetch from FDA directly or needs the
 self-hosted fallback.
