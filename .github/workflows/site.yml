@@ -1,0 +1,82 @@
+name: Site
+
+# Builds site data from live openFDA metadata plus the committed seed/state files,
+# builds the frontend, and on main deploys both to GitHub Pages.
+# Touches only api.fda.gov / download.open.fda.gov, never accessdata.fda.gov.
+#
+# Deployment runs only when the repository variable PAGES_ENABLED is "true"
+# (Settings > Secrets and variables > Actions > Variables), and Pages is set to
+# deploy from GitHub Actions. On free plans Pages requires a public repository.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "src/**"
+      - "seed/**"
+      - "state/**"
+      - "site/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - run: uv sync --locked
+      - name: Ingest, build graph, emit site data
+        run: uv run fda510k all
+
+      - name: Build frontend
+        working-directory: site
+        run: |
+          npm ci
+          npm run build
+          cp -r ../build/site-data dist/data
+
+      - name: Summarize
+        run: |
+          {
+            echo "## Ingest"; echo '```json'; cat build/ingest_meta.json; echo '```'
+            echo "## Graph"; echo '```json'; cat build/graph_report.json; echo '```'
+            echo "## Site"; echo '```'; du -sh site/dist site/dist/data; ls -lS build/site-data; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/dist
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PAGES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

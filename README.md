@@ -39,6 +39,32 @@ uv run fda510k all               # all three, in order
 - `state/manual_overrides.csv`: hand corrections (`device,predicate,action,reason,author`,
   where `action` is `add` or `remove`). Applied last.
 
+## Frontend
+
+A static Preact + Vite app in `site/`. It reads the JSON from `build/site-data/`
+(override with `SITE_DATA_DIR`), so run the pipeline first.
+
+```sh
+uv run fda510k all
+cd site
+npm ci
+npm run dev        # http://localhost:5173
+npm test           # vitest
+npm run lint       # biome
+npm run typecheck
+npm run build      # -> site/dist (copy build/site-data to dist/data to deploy)
+```
+
+## Deployment
+
+`.github/workflows/site.yml` builds the data and the site on every PR and push to
+`main`. It deploys to GitHub Pages from `main` once you:
+
+1. set Pages to deploy from **GitHub Actions** (Settings → Pages), and
+2. add the repository variable `PAGES_ENABLED=true`.
+
+On free GitHub plans, Pages requires a public repository.
+
 ## License
 
 Code: [MIT](LICENSE).
