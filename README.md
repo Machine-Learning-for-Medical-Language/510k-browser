@@ -22,6 +22,23 @@ uv run ruff check        # lint
 uv run ty check          # type check
 ```
 
+## Pipeline
+
+```sh
+uv run fda510k ingest            # openFDA 510(k) + classification bulk data -> build/
+uv run fda510k graph             # seed/ + state/manual_overrides.csv -> build/graph_edges.parquet
+uv run fda510k build-site-data   # -> build/site-data/ (static JSON for the frontend)
+uv run fda510k all               # all three, in order
+```
+
+`build/` is never committed. The committed inputs are:
+
+- `seed/`: predicate edges imported once from
+  [wcedmisten/fda-510k-analysis](https://github.com/wcedmisten/fda-510k-analysis)
+  (see [seed/SOURCE.md](seed/SOURCE.md)). Regenerate with `fda510k import-seed --from <clone>`.
+- `state/manual_overrides.csv`: hand corrections (`device,predicate,action,reason,author`,
+  where `action` is `add` or `remove`). Applied last.
+
 ## License
 
 Code: [MIT](LICENSE).
